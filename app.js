@@ -2,7 +2,7 @@
 'use strict';
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => Array.from(root.querySelectorAll(s));
-const DEFAULTS = {id:'main',initialBalance:0,reserve:0,essentials:0,payday:5,aiUrl:''};
+const DEFAULTS = {id:'main',initialBalance:0,reconciliationAdjustment:0,reserve:0,essentials:0,payday:5,aiUrl:''};
 const CATEGORIES = ['Alimentação','Mercado','Transporte','Moradia','Saúde','Lazer','Assinaturas','Salário','Transferências','Outros'];
 const DB_NAME='meu-financeiro-local-v1';
 let db=null, fallback=false, currentImport=null, cached={txs:[],bills:[],settings:{...DEFAULTS}}, toastTimer;
@@ -33,7 +33,7 @@ async function replaceAll(data){for(const s of ['txs','bills','settings','messag
 async function refresh(){const [txs,bills,settings]=await Promise.all([all('txs'),all('bills'),get('settings','main')]);cached={txs,bills,settings:{...DEFAULTS,...settings}};renderAll();}
 function nextPayday(s){const t=today(), [year,month,day]=t.split('-').map(Number), pd=Math.min(28,Math.max(1,num(s.payday)));let candidate=`${year}-${String(month).padStart(2,'0')}-${String(pd).padStart(2,'0')}`;if(day>=pd)candidate=addMonths(candidate,1);return candidate;}
 function billInstancesThrough(b,limit){if(b.paid)return 0;if(b.dueDate>limit)return 0;if(b.frequency!=='monthly')return 1;let x=b.dueDate,count=0;while(x<=limit&&count<120){count++;let next=addMonths(x,1);if(next<=x)break;x=next;}return count;}
-function plan(){let {txs,bills,settings:s}=cached;let balance=num(s.initialBalance)+txs.reduce((a,t)=>a+(t.type==='in'?num(t.amount):-num(t.amount)),0);let pay=nextPayday(s), days=Math.max(1,daysBetween(today(),pay));let pending=bills.reduce((v,b)=>v+num(b.amount)*billInstancesThrough(b,pay),0);let left=balance-pending-num(s.reserve)-num(s.essentials);return {balance,pay,days,pending,left,daily:Math.max(0,left/days),settings:s};}
+function plan(){let {txs,bills,settings:s}=cached;let balance=Math.round((num(s.initialBalance)+num(s.reconciliationAdjustment)+txs.reduce((a,t)=>a+(t.type==='in'?num(t.amount):-num(t.amount)),0))*100)/100;let pay=nextPayday(s), days=Math.max(1,daysBetween(today(),pay));let pending=bills.reduce((v,b)=>v+num(b.amount)*billInstancesThrough(b,pay),0);let left=balance-pending-num(s.reserve)-num(s.essentials);return {balance,pay,days,pending,left,daily:Math.max(0,left/days),settings:s};}
 function total(txs,type,start,end){return txs.filter(t=>t.type===type&&t.date>=start&&t.date<=end).reduce((v,t)=>v+num(t.amount),0)}
 function activeBills(){return cached.bills.filter(b=>!b.paid).sort((a,b)=>a.dueDate.localeCompare(b.dueDate));}
 function billStatus(b){let d=daysBetween(today(),b.dueDate);if(d<0)return `Atrasada há ${-d} dia(s)`;if(d===0)return 'Vence hoje';return `Vence em ${d} dia(s)`;}
@@ -237,10 +237,20 @@ async function wireEvents(){document.addEventListener('click',async e=>{let el=e
  $('#btn-import').addEventListener('click',()=>$('#file-import').click());$('#btn-import-short').addEventListener('click',()=>{view('settings');$('#file-import').click()});$('#file-import').addEventListener('change',async e=>{try{await handleStatement(e.target.files[0])}catch(err){toast('Erro na importação: '+err.message)}});
  $('#import-chat-package').addEventListener('click',()=>$('#chat-package-file').click());
  $('#chat-package-file').addEventListener('change',async e=>{try{await importChatPackage(e.target.files[0])}catch(err){toast('Erro na atualização: '+err.message)}e.target.value='';});
+ $('#reconcile-save').addEventListener('click',async()=>{
+  const real=moneyVal($('#reconcile-balance').value);
+  if(!Number.isFinite(real)||real<0){toast('Confira o saldo do banco.');return;}
+  const current=plan().balance;
+  const difference=Math.round((real-current)*100)/100;
+  if(!confirm('Saldo calculado: '+fmt(current)+'\\nSaldo bancário informado: '+fmt(real)+'\\nAjuste de conciliação: '+fmt(difference)+'\\n\\nSalvar diferença sem alterar movimentações?'))return;
+  await put('settings',{...cached.settings,reconciliationAdjustment:Math.round((num(cached.settings.reconciliationAdjustment)+difference)*100)/100});
+  await refresh();$('#reconcile-preview').textContent='Saldo conciliado. Ajuste acumulado: '+fmt(cached.settings.reconciliationAdjustment)+'. Se importar novas movimentações, faça outra conferência.';
+  toast('Saldo conciliado: '+fmt(plan().balance));
+ });
  $('#export-backup').addEventListener('click',()=>exportBackup().catch(err=>toast(err.message)));$('#import-backup-btn').addEventListener('click',()=>$('#backup-file').click());$('#backup-file').addEventListener('change',async e=>{try{await restoreBackup(e.target.files[0])}catch(err){toast('Erro ao restaurar: '+err.message)}e.target.value='';});
  $('#share-chatgpt').addEventListener('click',()=>shareFinanceWithChatGPT().catch(err=>toast('Não foi possível compartilhar: '+err.message)));
  $('#copy-chatgpt').addEventListener('click',async()=>{const ok=await copyFinanceReport(reportForChatGPT());toast(ok?'Resumo copiado. Abra o ChatGPT e cole na conversa.':'Não foi possível copiar o resumo.');});
  $('#demo-load').addEventListener('click',()=>demo().catch(err=>toast(err.message)));$('#clear-all').addEventListener('click',async()=>{if(prompt('Para apagar os dados, digite APAGAR:')!=='APAGAR')return;await replaceAll({txs:[],bills:[],settings:[{...DEFAULTS}],messages:[]});sessionStorage.removeItem('mf-ai-token');await refresh();await renderChat();toast('Dados locais apagados.');});$('#btn-help').addEventListener('click',()=>{view('assistant');toast('Digite uma pergunta ou uma movimentação no chat.');});}
 async function boot(){fillCategories();$('#filter-month').value=monthNow();try{db=await openDatabase();}catch(err){try{localStorage.setItem('mf-test','ok');localStorage.removeItem('mf-test');fallback=true;$('#db-status').classList.add('off');toast('IndexedDB indisponível: usando armazenamento local de emergência. Faça backup.');}catch{document.body.innerHTML='<main style="padding:30px;font-family:sans-serif"><h1>Armazenamento bloqueado</h1><p>Abra este aplicativo no Chrome com armazenamento permitido, de preferência hospedado em HTTPS.</p></main>';return;}}
- if(!(await get('settings','main')))await put('settings',{...DEFAULTS});await refresh();await renderChat();await wireEvents();if('serviceWorker'in navigator&&(location.protocol==='https:'||['localhost','127.0.0.1'].includes(location.hostname)))navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+ if(!(await get('settings','main')))await put('settings',{...DEFAULTS});await refresh();await renderChat();await wireEvents();const u=new URL(location.href);if(u.searchParams.has('saldo')){const input=$('#reconcile-balance');input.value=u.searchParams.get('saldo').replace('.',',');view('settings');document.getElementById('conciliacao').scrollIntoView({block:'start'});}if('serviceWorker'in navigator&&(location.protocol==='https:'||['localhost','127.0.0.1'].includes(location.hostname)))navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 boot().catch(err=>{console.error(err);toast('Erro ao iniciar: '+err.message)});
