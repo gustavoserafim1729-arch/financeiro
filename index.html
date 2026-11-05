@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0e2330"><meta name="description" content="Seu controle financeiro pessoal com conselhos inteligentes e privacidade.">
 <title>Meu Financeiro • Assistente pessoal</title>
-<link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="stylesheet" href="app.css?v=8">
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="stylesheet" href="app.css?v=9">
 </head>
 <body>
 <div class="app-shell">
@@ -33,5 +33,5 @@
 <dialog id="bill-modal" class="modal"><form id="bill-form" method="dialog"><div class="modal-top"><h2 id="bill-modal-title">Nova conta</h2><button type="button" class="iconbtn" data-close="bill-modal" aria-label="Fechar">×</button></div><input type="hidden" id="bill-id"><label>Descrição<input id="bill-description" maxlength="100" type="text" placeholder="Ex.: Internet" required></label><label>Valor (R$)<input id="bill-amount" inputmode="decimal" type="text" placeholder="120,00" required></label><label>Vencimento<input id="bill-date" type="date" required></label><label>Frequência<select id="bill-frequency"><option value="once">Uma vez</option><option value="monthly">Todo mês</option></select></label><button type="submit" class="button primary full">Salvar conta</button></form></dialog>
 <dialog id="pay-modal" class="modal"><form id="pay-form" method="dialog"><div class="modal-top"><h2>Pagar conta</h2><button type="button" class="iconbtn" data-close="pay-modal" aria-label="Fechar">×</button></div><input type="hidden" id="pay-id"><p id="pay-description"></p><label>Data do pagamento<input id="pay-date" type="date" required></label><label class="checkline"><input id="pay-no-entry" type="checkbox"> O pagamento já está nas movimentações (não registrar outra saída)</label><button type="submit" class="button primary full">Confirmar pagamento</button></form></dialog>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
-<script src="app.js?v=8" defer></script>
+<script src="app.js?v=9" defer></script>
 </body></html>
