@@ -71,6 +71,61 @@ async function localAnswer(input){let c=clean(input),p=plan(),t=today(),m=monthN
  return null;}
 function aiContext(){let p=plan(),m=monthNow(),category={};for(let t of cached.txs.filter(x=>x.date.startsWith(m)&&x.type==='out'))category[t.category||'Outros']=(category[t.category||'Outros']||0)+num(t.amount);return {data:today(),saldo_estimado:p.balance,ate_pagamento:p.pay,dias_restantes:p.days,limite_diario:p.daily,contas_previstas:p.pending,reserva:num(p.settings.reserve),essenciais:num(p.settings.essentials),margem:p.left,entradas_mes:total(cached.txs,'in',m+'-01',m+'-31'),saidas_mes:total(cached.txs,'out',m+'-01',m+'-31'),gastos_por_categoria:category,contas_pendentes:activeBills().slice(0,15).map(b=>({descricao:b.description,valor:b.amount,vencimento:b.dueDate}))};}
 async function askAI(message){let url=cached.settings.aiUrl,token=sessionStorage.getItem('mf-ai-token');if(!url||!token)return null;let u;try{u=new URL(url);if(u.protocol!=='https:'&&!['localhost','127.0.0.1'].includes(u.hostname))return 'Por segurança, use um servidor com HTTPS.';}catch{return 'Endereço do servidor de IA inválido.';}try{let ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),18000);let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({message,context:aiContext()}),signal:ctrl.signal});clearTimeout(timer);let data=await r.json();if(!r.ok)throw Error(data.error||'Não foi possível consultar a IA.');return String(data.answer||'O servidor não devolveu uma resposta.');}catch(e){return `Não consegui falar com o servidor da IA (${e.message}). O assistente local continua disponível.`;}}
+
+/* Ponte gratuita entre o Meu Financeiro e o ChatGPT: compartilhamento explícito, sem API paga. */
+function reportForChatGPT() {
+ const p=plan(), t=today(), m=monthNow();
+ const categories={};
+ for(const x of cached.txs)if(x.type==='out'&&x.date.startsWith(m))categories[x.category||'Outros']=(categories[x.category||'Outros']||0)+num(x.amount);
+ const byCategory=Object.entries(categories).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>k+': '+fmt(v));
+ const bills=activeBills().slice(0,18).map(b=>
+   '- '+b.description+': '+fmt(b.amount)+' (vence '+dateLabel(b.dueDate)+(b.frequency==='monthly'?', mensal':'')+')');
+ return [
+  'Quero que você seja meu assistente financeiro pessoal, com análises conservadoras e objetivas.',
+  'Estes valores são estimativas cadastradas manualmente ou importadas; não são saldo confirmado pelo banco.',
+  'Não invente valores ou dívidas e diga quando os dados forem insuficientes.',
+  'Explique se posso gastar hoje, se há risco de faltar dinheiro e o que devo priorizar.',
+  '',
+  'RESUMO DO MEU FINANCEIRO EM '+dateLabel(t)+':',
+  'Saldo estimado agora: '+fmt(p.balance),
+  'Entrou hoje: '+fmt(total(cached.txs,'in',t,t)),
+  'Saiu hoje: '+fmt(total(cached.txs,'out',t,t)),
+  'Entradas do mês: '+fmt(total(cached.txs,'in',m+'-01',m+'-31')),
+  'Gastos do mês: '+fmt(total(cached.txs,'out',m+'-01',m+'-31')),
+  'Próximo pagamento previsto: '+dateLabel(p.pay),
+  'Contas até o próximo pagamento: '+fmt(p.pending),
+  'Reserva protegida: '+fmt(num(p.settings.reserve)),
+  'Despesas essenciais ainda previstas: '+fmt(num(p.settings.essentials)),
+  'Margem livre até o pagamento: '+fmt(p.left),
+  'Limite diário estimado: '+fmt(p.daily)+' por '+p.days+' dias',
+  'Total de movimentações registradas: '+cached.txs.length,
+  'Categorias de gastos do mês: '+(byCategory.join('; ')||'nenhuma informada'),
+  'Contas pendentes: \n'+(bills.join('\n')||'nenhuma cadastrada'),
+  '',
+  'Me dê uma análise curta: o que evitar, contas urgentes e quanto é prudente gastar por dia. Não considere valores de salários futuros como saldo disponível.'
+ ].join('\n');
+}
+async function copyFinanceReport(message) {
+ try {
+  if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(message);return true}
+ } catch {}
+ const input=document.createElement('textarea');
+ input.value=message;input.style.position='fixed';input.style.left='-9999px';
+ document.body.append(input);input.focus();input.select();
+ let ok=false;try{ok=document.execCommand('copy')}catch{}
+ input.remove();return ok;
+}
+async function shareFinanceWithChatGPT() {
+ const message=reportForChatGPT();
+ if(navigator.share){
+  try{await navigator.share({title:'Meu Financeiro — resumo para análise',text:message});toast('Resumo compartilhado pelo celular.');return}
+  catch(e){if(e&&e.name==='AbortError')return}
+ }
+ const ok=await copyFinanceReport(message);
+ if(ok){toast('Resumo copiado. Cole na conversa do ChatGPT.');window.open('https://chatgpt.com/','_blank','noopener,noreferrer')}
+ else toast('Não foi possível compartilhar. Tente Copiar resumo.');
+}
+
 async function recordChat(role,text){let obj={id:uuid(),role,text,date:new Date().toISOString()};await put('messages',obj);addBubble(obj);let msgs=await all('messages');if(msgs.length>80){msgs.sort((a,b)=>a.date.localeCompare(b.date));for(let old of msgs.slice(0,msgs.length-80))await del('messages',old.id);}}
 function addBubble(o){let root=$('#chat-messages');let b=document.createElement('div');b.className='bubble '+(o.role==='user'?'user':'bot');let stamp=new Date(o.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});b.innerHTML=`${esc(o.text)}<small>${stamp}</small>`;root.append(b);root.scrollTop=root.scrollHeight;}
 async function renderChat(){let arr=await all('messages');arr.sort((a,b)=>a.date.localeCompare(b.date));$('#chat-messages').innerHTML='';if(!arr.length)addBubble({role:'bot',text:'Oi! Eu acompanho seus gastos e suas contas. Pode me dizer “gastei 35 no almoço”, “recebi 1800 de salário”, “o que falta pagar?” ou “posso gastar 120 em um jogo?”.',date:new Date().toISOString()});else for(let o of arr)addBubble(o);}
@@ -92,6 +147,8 @@ async function wireEvents(){document.addEventListener('click',async e=>{let el=e
  $('#btn-import').addEventListener('click',()=>$('#file-import').click());$('#btn-import-short').addEventListener('click',()=>{view('settings');$('#file-import').click()});$('#file-import').addEventListener('change',async e=>{try{await handleStatement(e.target.files[0])}catch(err){toast('Erro na importação: '+err.message)}});
  $('#export-backup').addEventListener('click',()=>exportBackup().catch(err=>toast(err.message)));$('#import-backup-btn').addEventListener('click',()=>$('#backup-file').click());$('#backup-file').addEventListener('change',async e=>{try{await restoreBackup(e.target.files[0])}catch(err){toast('Erro ao restaurar: '+err.message)}e.target.value='';});
  $('#save-ai').addEventListener('click',async()=>{let url=$('#set-ai-url').value.trim(),token=$('#set-ai-token').value.trim();if(url){try{let u=new URL(url);if(u.protocol!=='https:'&&!['localhost','127.0.0.1'].includes(u.hostname))throw Error('HTTPS obrigatório');}catch{toast('Endereço inválido. Use HTTPS.');return}}await put('settings',{...cached.settings,aiUrl:url});if(token)sessionStorage.setItem('mf-ai-token',token);else sessionStorage.removeItem('mf-ai-token');await refresh();toast(url?'Configuração salva. Teste no Assistente.':'IA online desativada.');});
+ $('#share-chatgpt').addEventListener('click',()=>shareFinanceWithChatGPT().catch(err=>toast('Não foi possível compartilhar: '+err.message)));
+ $('#copy-chatgpt').addEventListener('click',async()=>{const ok=await copyFinanceReport(reportForChatGPT());toast(ok?'Resumo copiado. Abra o ChatGPT e cole na conversa.':'Não foi possível copiar o resumo.');});
  $('#demo-load').addEventListener('click',()=>demo().catch(err=>toast(err.message)));$('#clear-all').addEventListener('click',async()=>{if(prompt('Para apagar os dados, digite APAGAR:')!=='APAGAR')return;await replaceAll({txs:[],bills:[],settings:[{...DEFAULTS}],messages:[]});sessionStorage.removeItem('mf-ai-token');await refresh();await renderChat();toast('Dados locais apagados.');});$('#btn-help').addEventListener('click',()=>{view('assistant');toast('Digite uma pergunta ou uma movimentação no chat.');});}
 async function boot(){fillCategories();$('#filter-month').value=monthNow();try{db=await openDatabase();}catch(err){try{localStorage.setItem('mf-test','ok');localStorage.removeItem('mf-test');fallback=true;$('#db-status').classList.add('off');toast('IndexedDB indisponível: usando armazenamento local de emergência. Faça backup.');}catch{document.body.innerHTML='<main style="padding:30px;font-family:sans-serif"><h1>Armazenamento bloqueado</h1><p>Abra este aplicativo no Chrome com armazenamento permitido, de preferência hospedado em HTTPS.</p></main>';return;}}
  if(!(await get('settings','main')))await put('settings',{...DEFAULTS});await refresh();await renderChat();await wireEvents();if('serviceWorker'in navigator&&(location.protocol==='https:'||['localhost','127.0.0.1'].includes(location.hostname)))navigator.serviceWorker.register('./sw.js').catch(()=>{});}
