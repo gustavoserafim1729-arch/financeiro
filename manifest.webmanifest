@@ -1,0 +1,18 @@
+{
+  "name": "Meu Financeiro — Assistente pessoal",
+  "short_name": "Meu Financeiro",
+  "description": "Controle financeiro local com planejamento, contas e assistente.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f7f6",
+  "theme_color": "#0e2330",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
