@@ -138,6 +138,69 @@ function signature(t){return `${t.date}|${t.type}|${num(t.amount).toFixed(2)}|${
 async function handleStatement(file){if(!file)return;if(file.size>2*1024*1024){toast('Arquivo grande demais. Limite de 2 MB.');return}let raw=await file.text();if(/\.(ofx|qfx)$/i.test(file.name)||/<OFX>/i.test(raw)){let arr=ofxParse(raw);if(!arr.length)throw Error('Não localizei transações OFX válidas.');currentImport={type:'ofx',entries:arr,filename:file.name};showImportRows(arr);return;}let csv=csvParse(raw),h=csv.headers;currentImport={type:'csv',csv,filename:file.name};let cols={date:findCol(h,['data','date']),desc:findCol(h,['descricao','descrição','description','title','estabelecimento','historico','histórico','memo','nome','detail']),amount:findCol(h,['valor','amount','quantia']),type:findCol(h,['tipo','type','natureza','operacao'])};renderCsvMapping(cols);}
 function renderCsvMapping(cols){let imp=currentImport,w=$('#import-workspace');w.classList.remove('hidden');let opts=(selected,optional=false)=>`${optional?'<option value="-1">Não tem</option>':''}${imp.csv.headers.map((h,i)=>`<option value="${i}" ${selected===i?'selected':''}>${esc(h||'Coluna '+(i+1))}</option>`).join('')}`;w.innerHTML=`<h3>Confira as colunas</h3><p class="muted">${esc(imp.filename)} · ${imp.csv.rows.length} linha(s). Use somente extratos de conta, não faturas de cartão.</p><label>Data<select id="map-date">${opts(cols.date)}</select></label><label>Descrição<select id="map-desc">${opts(cols.desc)}</select></label><label>Valor<select id="map-amount">${opts(cols.amount)}</select></label><label>Tipo (entrada/saída), se existir<select id="map-type">${opts(cols.type,true)}</select></label><label>Se o valor for positivo e não houver tipo:<select id="map-positive"><option value="in">Tratar como entrada</option><option value="out">Tratar como saída (ex.: fatura/cartão)</option></select></label><button id="map-review" class="button primary full">Revisar movimentações</button><div class="note">Atenção: escolha o sentido correto dos valores. Valores negativos são sempre tratados como saídas.</div>`;$('#map-review').addEventListener('click',()=>{let mapped={date:+$('#map-date').value,desc:+$('#map-desc').value,amount:+$('#map-amount').value,type:+$('#map-type').value};if(Object.values(mapped).slice(0,3).some(n=>n<0)){toast('Mapeie data, descrição e valor.');return}let entries=imp.csv.rows.map(row=>importCandidate(row,mapped,$('#map-positive').value)).filter(r=>r.amount>0&&nDate(r.date));if(!entries.length){toast('Nenhuma linha válida. Confira as colunas e datas.');return}imp.entries=entries;showImportRows(entries);});}
 function showImportRows(entries){let w=$('#import-workspace');w.classList.remove('hidden');let prior=new Set(cached.txs.map(x=>x.externalId||signature(x))),seen=new Set();let limited=entries.slice(0,1000);let rows=limited.map((e,i)=>{let sig=e.externalId||signature(e),dupe=prior.has(sig)||seen.has(sig);seen.add(sig);return `<label class="import-row"><input type="checkbox" data-import-index="${i}" ${dupe?'':'checked'}><span>${dateLabel(e.date)} · ${esc(e.description)}<br><small>${e.type==='in'?'+':'−'} ${fmt(e.amount)}${dupe?' · possível duplicado':''}</small></span></label>`}).join('');w.innerHTML=`<h3>Revisar antes de importar</h3><p class="muted">${esc(currentImport.filename)} · ${entries.length} linha(s) válida(s). ${entries.length>1000?'Mostrando apenas as 1.000 primeiras; divida o arquivo para importar o restante.':''}Desmarque o que não quiser. Possíveis duplicatas vêm desmarcadas.</p><div class="import-list">${rows}</div><button id="confirm-import" class="button primary full">Importar selecionadas</button><button id="cancel-import" class="button outline full">Cancelar</button>`;$('#confirm-import').addEventListener('click',async()=>{let idx=$$('[data-import-index]:checked',w).map(x=>Number(x.dataset.importIndex));if(!idx.length){toast('Nenhuma movimentação selecionada.');return}for(let i of idx)await put('txs',limited[i]);currentImport=null;w.innerHTML='';w.classList.add('hidden');$('#file-import').value='';await refresh();toast(`${idx.length} movimentação(ões) importada(s). Confira o saldo.`);});$('#cancel-import').addEventListener('click',()=>{currentImport=null;w.innerHTML='';w.classList.add('hidden');});}
+
+/* Atualização offline preparada nesta conversa. Nunca substitui registros existentes. */
+function packageKey(x,kind) {
+ return kind==='tx' ? ['tx',x.date,x.type,Number(x.amount).toFixed(2),clean(x.description)].join('|') :
+ ['bill',x.dueDate,Number(x.amount).toFixed(2),clean(x.description)].join('|');
+}
+async function importChatPackage(file) {
+ if(!file)return;
+ const preview=$('#chat-package-preview');
+ if(file.size>1024*1024)throw Error('Arquivo muito grande. Limite: 1 MB.');
+ let pkg;
+ try{pkg=JSON.parse(await file.text())}catch{throw Error('Não foi possível ler o arquivo JSON.')}
+ if(!pkg||pkg.format!=='meu-financeiro-update'||pkg.version!==1||
+    !Array.isArray(pkg.txs)||!Array.isArray(pkg.bills)||pkg.txs.length+pkg.bills.length>200||
+    pkg.txs.length+pkg.bills.length<1)throw Error('Formato de atualização inválido ou vazio.');
+ const txs=[],bills=[];
+ for(const x of pkg.txs) {
+  if(!x||typeof x.description!=='string'||!x.description.trim()||x.description.length>100||
+     !['in','out'].includes(x.type)||!nDate(x.date)||!Number.isFinite(x.amount)||
+     x.amount<=0||x.amount>100000000)throw Error('Uma movimentação está incompleta ou inválida.');
+  txs.push({id:typeof x.id==='string'&&/^chat-[\w-]{8,100}$/.test(x.id)?x.id:uuid(),
+   type:x.type,amount:Math.round(x.amount*100)/100,description:x.description.trim(),
+   category:CATEGORIES.includes(x.category)?x.category:categoryFor(x.description,x.type),
+   date:x.date,origin:'chat-import',createdAt:new Date().toISOString()});
+ }
+ for(const x of pkg.bills) {
+  if(!x||typeof x.description!=='string'||!x.description.trim()||x.description.length>100||
+     !nDate(x.dueDate)||!Number.isFinite(x.amount)||x.amount<=0||x.amount>100000000||
+     !['once','monthly'].includes(x.frequency))throw Error('Uma conta está incompleta ou inválida.');
+  bills.push({id:typeof x.id==='string'&&/^chat-[\w-]{8,100}$/.test(x.id)?x.id:uuid(),
+   description:x.description.trim(),amount:Math.round(x.amount*100)/100,
+   dueDate:x.dueDate,frequency:x.frequency,paid:false,createdAt:new Date().toISOString()});
+ }
+ const existingTxs=await all('txs'),existingBills=await all('bills');
+ const txIds=new Set(existingTxs.map(x=>x.id)),billIds=new Set(existingBills.map(x=>x.id));
+ const txKeys=new Set(existingTxs.map(x=>packageKey(x,'tx')));
+ const billKeys=new Set(existingBills.map(x=>packageKey(x,'bill')));
+ const freshTx=txs.filter(x=>{const k=packageKey(x,'tx');if(txIds.has(x.id)||txKeys.has(k))return false;txIds.add(x.id);txKeys.add(k);return true;});
+ const freshBills=bills.filter(x=>{const k=packageKey(x,'bill');if(billIds.has(x.id)||billKeys.has(k))return false;billIds.add(x.id);billKeys.add(k);return true;});
+ const skipped=txs.length+bills.length-freshTx.length-freshBills.length;
+ preview.classList.remove('hidden');
+ const items=[...freshTx.map(x=>({label:'Movimentação · '+dateLabel(x.date)+' · '+(x.type==='in'?'Entrada':'Saída')+' · '+fmt(x.amount)+' · '+x.description})),
+              ...freshBills.map(x=>({label:'Conta · '+dateLabel(x.dueDate)+' · '+fmt(x.amount)+' · '+x.description+(x.frequency==='monthly'?' · mensal':'')}))];
+ preview.innerHTML='<h3>Conferir atualização</h3><p>'+freshTx.length+' movimentação(ões), '+freshBills.length+
+ ' conta(s) nova(s). '+skipped+' registro(s) já existente(s)/repetido(s) serão ignorados.</p>'+
+ '<div class="import-package-lines">'+items.map((v,i)=>'<label class="checkline"><input type="checkbox" data-package-index="'+i+'" checked> '+esc(v.label)+'</label>').join('')+'</div>'+
+ '<div class="button-row"><button type="button" class="button primary" id="confirm-chat-update" '+(items.length?'':'disabled')+'>Adicionar selecionados</button>'+
+ '<button type="button" class="button outline" id="cancel-chat-update">Cancelar</button></div>';
+ $('#cancel-chat-update').addEventListener('click',()=>{preview.classList.add('hidden');preview.innerHTML='';});
+ $('#confirm-chat-update').addEventListener('click',async e=>{
+  e.currentTarget.disabled=true;
+  const selected=new Set($('[data-package-index]:checked',preview).map(x=>Number(x.dataset.packageIndex)));
+  if(!selected.size){toast('Selecione ao menos um registro.');e.currentTarget.disabled=false;return}
+  try{
+   let count=0;
+   for(let i=0;i<freshTx.length;i++)if(selected.has(i)){await put('txs',freshTx[i]);count++}
+   for(let i=0;i<freshBills.length;i++)if(selected.has(freshTx.length+i)){await put('bills',freshBills[i]);count++}
+   preview.classList.add('hidden');preview.innerHTML='';await refresh();
+   toast(count+' registro(s) adicionados ao aplicativo.');
+  }catch(err){toast('Falha ao importar: '+err.message);e.currentTarget.disabled=false}
+ });
+}
+
 async function exportBackup(){let data={format:'meu-financeiro',version:1,exportedAt:new Date().toISOString(),txs:await all('txs'),bills:await all('bills'),settings:await all('settings'),messages:await all('messages')};let blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`meu-financeiro-backup-${today()}.json`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Backup exportado. Proteja esse arquivo.');}
 async function restoreBackup(file){if(!file)return;if(file.size>3*1024*1024){toast('Backup muito grande.');return}let data=JSON.parse(await file.text());if(data.format!=='meu-financeiro'||data.version!==1||!Array.isArray(data.txs)||!Array.isArray(data.bills)||!Array.isArray(data.settings)||!Array.isArray(data.messages))throw Error('Arquivo não é um backup válido do Meu Financeiro.');if(!confirm(`Substituir TODOS os seus registros pelos dados do backup? Esta ação não pode ser desfeita.`))return;await replaceAll(data);await refresh();await renderChat();toast('Backup restaurado.');}
 async function demo(){if(cached.txs.length||cached.bills.length||num(cached.settings.initialBalance)!==0){toast('A demonstração só funciona em uma base vazia.');return}let s={...DEFAULTS,initialBalance:1200,reserve:100,essentials:50,payday:new Date().getDate()===28?27:Math.min(28,new Date().getDate()+10)};await put('settings',s);await put('txs',{id:uuid(),type:'out',amount:35,description:'Almoço',category:'Alimentação',date:today(),origin:'manual'});await put('txs',{id:uuid(),type:'in',amount:400,description:'Trabalho extra',category:'Outros',date:today(),origin:'manual'});await put('bills',{id:uuid(),description:'Internet',amount:120,dueDate:addDay(today(),3),frequency:'monthly',paid:false});await put('bills',{id:uuid(),description:'Parcela empréstimo (exemplo)',amount:210,dueDate:addDay(today(),5),frequency:'monthly',paid:false});await refresh();view('home');toast('Exemplo fictício criado. Pode apagar em Ajustes.');}
@@ -145,6 +208,8 @@ function addDay(s,n){let d=new Date(utcDay(s)+n*86400000);return `${d.getUTCFull
 async function wireEvents(){document.addEventListener('click',async e=>{let el=e.target.closest('button');if(!el)return;if(el.dataset.go){view(el.dataset.go);return}if(el.dataset.close){hideModal(el.dataset.close);return}try{if(el.dataset.editTx){newTx(await get('txs',el.dataset.editTx));return}if(el.dataset.deleteTx){if(confirm('Excluir esta movimentação?')){await del('txs',el.dataset.deleteTx);await refresh();toast('Movimentação excluída.')}return}if(el.dataset.editBill){newBill(await get('bills',el.dataset.editBill));return}if(el.dataset.deleteBill){if(confirm('Excluir esta conta?')){await del('bills',el.dataset.deleteBill);await refresh();toast('Conta excluída.')}return}if(el.dataset.pay){openPay(await get('bills',el.dataset.pay));return}if(el.dataset.prompt){$('#chat-input').value=el.dataset.prompt;await submitChat(new Event('submit'));return}}catch(err){toast(err.message)}});
  $('#new-transaction').addEventListener('click',()=>newTx());$('#new-bill').addEventListener('click',()=>newBill());$('#entry-form').addEventListener('submit',e=>saveTransaction(e).catch(err=>toast(err.message)));$('#bill-form').addEventListener('submit',e=>saveBill(e).catch(err=>toast(err.message)));$('#pay-form').addEventListener('submit',e=>submitPay(e).catch(err=>toast(err.message)));$('#settings-form').addEventListener('submit',e=>saveSettings(e).catch(err=>toast(err.message)));$('#entry-description').addEventListener('blur',()=>{if($('#entry-category').value==='Outros')$('#entry-category').value=categoryFor($('#entry-description').value,$('#entry-type').value);});$('#filter-month').addEventListener('change',renderTransactions);$('#filter-type').addEventListener('change',renderTransactions);$('#chat-form').addEventListener('submit',submitChat);
  $('#btn-import').addEventListener('click',()=>$('#file-import').click());$('#btn-import-short').addEventListener('click',()=>{view('settings');$('#file-import').click()});$('#file-import').addEventListener('change',async e=>{try{await handleStatement(e.target.files[0])}catch(err){toast('Erro na importação: '+err.message)}});
+ $('#import-chat-package').addEventListener('click',()=>$('#chat-package-file').click());
+ $('#chat-package-file').addEventListener('change',async e=>{try{await importChatPackage(e.target.files[0])}catch(err){toast('Erro na atualização: '+err.message)}e.target.value='';});
  $('#export-backup').addEventListener('click',()=>exportBackup().catch(err=>toast(err.message)));$('#import-backup-btn').addEventListener('click',()=>$('#backup-file').click());$('#backup-file').addEventListener('change',async e=>{try{await restoreBackup(e.target.files[0])}catch(err){toast('Erro ao restaurar: '+err.message)}e.target.value='';});
  $('#share-chatgpt').addEventListener('click',()=>shareFinanceWithChatGPT().catch(err=>toast('Não foi possível compartilhar: '+err.message)));
  $('#copy-chatgpt').addEventListener('click',async()=>{const ok=await copyFinanceReport(reportForChatGPT());toast(ok?'Resumo copiado. Abra o ChatGPT e cole na conversa.':'Não foi possível copiar o resumo.');});
