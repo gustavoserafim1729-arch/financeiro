@@ -172,17 +172,44 @@ async function importChatPackage(file) {
    dueDate:x.dueDate,frequency:x.frequency,paid:false,createdAt:new Date().toISOString()});
  }
  const existingTxs=await all('txs'),existingBills=await all('bills');
- const txIds=new Set(existingTxs.map(x=>x.id)),billIds=new Set(existingBills.map(x=>x.id));
- const txKeys=new Set(existingTxs.map(x=>packageKey(x,'tx')));
- const billKeys=new Set(existingBills.map(x=>packageKey(x,'bill')));
- const freshTx=txs.filter(x=>{const k=packageKey(x,'tx');if(txIds.has(x.id)||txKeys.has(k))return false;txIds.add(x.id);txKeys.add(k);return true;});
- const freshBills=bills.filter(x=>{const k=packageKey(x,'bill');if(billIds.has(x.id)||billKeys.has(k))return false;billIds.add(x.id);billKeys.add(k);return true;});
+ // Repetições idênticas no mesmo dia podem ser movimentações reais distintas.
+ // IDs controlam reimportações; contagens conciliam registros manuais anteriores.
+ function onlyNew(rows, existing, kind){
+   const existingIds=new Set(existing.map(x=>x.id));
+   const incomingIds=new Set(rows.map(x=>x.id));
+   const manualCounts=new Map();
+   for(const x of existing){
+     if(incomingIds.has(x.id))continue;
+     const k=packageKey(x,kind);
+     manualCounts.set(k,(manualCounts.get(k)||0)+1);
+   }
+   const seenIds=new Set(),fresh=[];
+   for(const x of rows){
+     if(existingIds.has(x.id)||seenIds.has(x.id))continue;
+     seenIds.add(x.id);
+     const k=packageKey(x,kind),n=manualCounts.get(k)||0;
+     if(n>0){manualCounts.set(k,n-1);continue}
+     fresh.push(x);
+   }
+   return fresh;
+ }
+ const freshTx=onlyNew(txs,existingTxs,'tx');
+ const freshBills=onlyNew(bills,existingBills,'bill');
  const skipped=txs.length+bills.length-freshTx.length-freshBills.length;
+
+ const rec=pkg.bankReconciliation;
+ const recNote=rec&&Number.isFinite(rec.openingBalance)&&rec.openingDate&&
+   Number.isFinite(rec.closingBalance)&&rec.closingDate?
+  '<div class="note">Extrato de '+esc(dateLabel(rec.openingDate))+' a '+esc(dateLabel(rec.closingDate))+
+  ': saldo inicial '+fmt(rec.openingBalance)+', saldo final '+fmt(rec.closingBalance)+
+  '. O saldo inicial do aplicativo não será alterado automaticamente. Se todos os registros anteriores ao período estiverem ausentes, confira em Ajustes se o saldo inicial deve ser '+fmt(rec.openingBalance)+
+  '. O saldo final do extrato não é necessariamente o saldo atual.</div>':'';
+
  preview.classList.remove('hidden');
  const items=[...freshTx.map(x=>({label:'Movimentação · '+dateLabel(x.date)+' · '+(x.type==='in'?'Entrada':'Saída')+' · '+fmt(x.amount)+' · '+x.description})),
               ...freshBills.map(x=>({label:'Conta · '+dateLabel(x.dueDate)+' · '+fmt(x.amount)+' · '+x.description+(x.frequency==='monthly'?' · mensal':'')}))];
  preview.innerHTML='<h3>Conferir atualização</h3><p>'+freshTx.length+' movimentação(ões), '+freshBills.length+
- ' conta(s) nova(s). '+skipped+' registro(s) já existente(s)/repetido(s) serão ignorados.</p>'+
+ ' conta(s) nova(s). '+skipped+' registro(s) já existente(s)/repetido(s) serão ignorados.</p>'+recNote+
  '<div class="import-package-lines">'+items.map((v,i)=>'<label class="checkline"><input type="checkbox" data-package-index="'+i+'" checked> '+esc(v.label)+'</label>').join('')+'</div>'+
  '<div class="button-row"><button type="button" class="button primary" id="confirm-chat-update" '+(items.length?'':'disabled')+'>Adicionar selecionados</button>'+
  '<button type="button" class="button outline" id="cancel-chat-update">Cancelar</button></div>';
