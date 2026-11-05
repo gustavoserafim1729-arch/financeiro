@@ -216,7 +216,7 @@ async function importChatPackage(file) {
  $('#cancel-chat-update').addEventListener('click',()=>{preview.classList.add('hidden');preview.innerHTML='';});
  $('#confirm-chat-update').addEventListener('click',async e=>{
   e.currentTarget.disabled=true;
-  const selected=new Set($('[data-package-index]:checked',preview).map(x=>Number(x.dataset.packageIndex)));
+  const selected=new Set(Array.from(preview.querySelectorAll('[data-package-index]:checked')).map(x=>Number(x.dataset.packageIndex)));
   if(!selected.size){toast('Selecione ao menos um registro.');e.currentTarget.disabled=false;return}
   try{
    let count=0;
